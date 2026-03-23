@@ -1,48 +1,21 @@
 #!/home/fguirama/Desktop/eval/.venv/bin/python
-"""
-PeerSphere — 42Berlin Evaluation Auto-Assigner
-
-Automatically polls POST /backend/intra/teams/assign/ every 30 seconds
-so you can keep coding instead of manually refreshing for eval slots.
-
-Usage:
-    1. Copy .env.example to .env and fill in your tokens
-    2. python3 auto_assign.py
-
-    Or pass tokens directly:
-    python3 auto_assign.py --team-id 7198790 --project kfs-2
-"""
-
-import argparse
-import json
 import logging
 import os
 import signal
-import sys
 import time
-from datetime import datetime
 
-try:
-    import requests
-except ImportError:
-    print("Missing dependency: requests")
-    print("Install it with: pip3 install requests")
-    sys.exit(1)
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+import requests
 
 BASE_URL = "https://evaluations.42berlin.de"
 ASSIGN_ENDPOINT = f"{BASE_URL}/backend/intra/teams/assign/"
 USER_INFO_ENDPOINT = f"{BASE_URL}/backend/intra/teams/"
 TOKEN_REFRESH_ENDPOINT = f"{BASE_URL}/backend/api/accounts/token/refresh/"
-POLL_INTERVAL = 30  # seconds
+POLL_INTERVAL = 30
+
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -50,10 +23,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("peersphere")
 
+
 # ---------------------------------------------------------------------------
 # Graceful shutdown
 # ---------------------------------------------------------------------------
-
 running = True
 
 
@@ -66,13 +39,11 @@ def _handle_signal(signum, _frame):
 signal.signal(signal.SIGINT, _handle_signal)
 signal.signal(signal.SIGTERM, _handle_signal)
 
+
 # ---------------------------------------------------------------------------
 # Token helpers
 # ---------------------------------------------------------------------------
-
-
-def refresh_access_token(session: requests.Session, refresh_token: str) -> bool:
-    """Use the refresh token to obtain a new access token via Set-Cookie."""
+def refresh_access_token(session: requests.Session, refresh_token: str):
     log.info("Attempting to refresh access token...")
     try:
         resp = session.post(
@@ -81,8 +52,6 @@ def refresh_access_token(session: requests.Session, refresh_token: str) -> bool:
             timeout=15,
         )
         if resp.status_code == 200:
-            # Server sets new tokens via Set-Cookie headers,
-            # requests.Session picks them up automatically.
             log.info("Access token refreshed successfully.")
             return True
         log.warning("Token refresh failed (HTTP %s): %s", resp.status_code, resp.text[:200])
@@ -91,26 +60,17 @@ def refresh_access_token(session: requests.Session, refresh_token: str) -> bool:
     return False
 
 
-class MissingUserData(Exception):
-    def __init__(self, *args: object) -> None:
-        super().__init__("Missing project name and team id")
-
-
 # ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
-
 def build_session(access_token: str, refresh_token: str, csrf_token: str, session_id: str) -> requests.Session:
-    """Build a requests.Session with the necessary headers and cookies."""
     s = requests.Session()
 
-    # Cookies
     s.cookies.set("access_token", access_token, domain="evaluations.42berlin.de")
     s.cookies.set("refresh_token", refresh_token, domain="evaluations.42berlin.de")
     s.cookies.set("csrftoken", csrf_token, domain="evaluations.42berlin.de")
     s.cookies.set("sessionid", session_id, domain="evaluations.42berlin.de")
 
-    # Headers that stay constant
     s.headers.update(
         {
             "Accept": "application/json, text/plain, */*",
@@ -126,6 +86,11 @@ def build_session(access_token: str, refresh_token: str, csrf_token: str, sessio
         }
     )
     return s
+
+
+class MissingUserData(Exception):
+    def __init__(self, *args: object) -> None:
+        super().__init__("Missing project name and team id")
 
 
 def get_user_info(
@@ -160,20 +125,7 @@ def get_user_info(
     return project['id'], project['project_name']
 
 
-def try_assign(
-    session: requests.Session,
-    team_id: int,
-    project_name: str,
-    refresh_token: str,
-    csrf_token: str,
-    session_id: str,
-) -> bool:
-    """
-    Send a single assign request.
-
-    Returns True if assignment succeeded (script should stop).
-    Handles token refresh on 401.
-    """
+def try_assign(session: requests.Session, team_id, project_name, refresh_token):
     payload = {"team_id": team_id, "project_name": project_name}
 
     try:
@@ -197,7 +149,6 @@ def try_assign(
         log.warning("Unauthorized (401) — token may have expired.")
         refreshed = refresh_access_token(session, refresh_token)
         if refreshed:
-            # Session cookies are updated automatically by the server's Set-Cookie
             log.info("Retrying assign with refreshed token...")
             try:
                 resp = session.post(ASSIGN_ENDPOINT, json=payload, timeout=15)
@@ -208,16 +159,13 @@ def try_assign(
             except requests.RequestException as exc:
                 log.error("Retry request failed: %s", exc)
         else:
-            log.error(
-                "Could not refresh token. You may need to log in again and update .env"
-            )
+            log.error("Could not refresh token. You may need to log in again and update .env")
         return False
 
     if status == 429:
         log.warning("Rate limited (429). Will wait and retry next cycle.")
         return False
 
-    # Any other status
     log.info("HTTP %s — %s", status, body)
     return False
 
@@ -225,8 +173,6 @@ def try_assign(
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-
-
 def load_env_file():
     """Load .env file from the script's directory if it exists."""
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -244,40 +190,18 @@ def load_env_file():
                 os.environ.setdefault(key, value)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="PeerSphere — 42Berlin eval auto-assigner"
-    )
-    parser.add_argument("--team-id", type=int, help="Team ID to assign")
-    parser.add_argument("--project", type=str, help="Project name (e.g. kfs-2)")
-    parser.add_argument(
-        "--interval",
-        type=int,
-        default=POLL_INTERVAL,
-        help=f"Seconds between attempts (default: {POLL_INTERVAL})",
-    )
-    return parser.parse_args()
-
-
 def main():
     load_env_file()
-    args = parse_args()
 
-    # Resolve configuration: CLI args > env vars
-    team_id = args.team_id or int(os.environ.get("TEAM_ID", 0))
-    project_name = args.project or os.environ.get("PROJECT_NAME", "")
+    team_id = os.environ.get("TEAM_ID", "0")
+    project_name = os.environ.get("PROJECT_NAME", "")
     access_token = os.environ.get("ACCESS_TOKEN", "")
     refresh_token = os.environ.get("REFRESH_TOKEN", "")
     csrf_token = os.environ.get("CSRF_TOKEN", "")
     session_id = os.environ.get("SESSION_ID", "")
-    interval = args.interval
+    interval = 120
 
-    # Validate required values
     missing = []
-    # if not team_id:
-    #     missing.append("TEAM_ID (or --team-id)")
-    # if not project_name:
-    #     missing.append("PROJECT_NAME (or --project)")
     if not access_token:
         missing.append("ACCESS_TOKEN")
     if not csrf_token:
@@ -288,26 +212,21 @@ def main():
     if missing:
         log.error("Missing required configuration: %s", ", ".join(missing))
         log.error("Set them in .env or pass via CLI / environment variables.")
-        sys.exit(1)
+        exit(1)
 
     if not refresh_token:
-        log.warning(
-            "REFRESH_TOKEN not set — token auto-refresh will not work. "
-            "Script will stop if the access token expires."
-        )
+        log.warning("REFRESH_TOKEN not set — token auto-refresh will not work. Script will stop if the access token expires.")
 
-    # Build session
     session = build_session(access_token, refresh_token, csrf_token, session_id)
 
     if not project_name or not team_id:
         try:
             team_id, project_name = get_user_info(session, refresh_token)
         except MissingUserData:
-            log.error(
-                "Can get project name and team id, you must add in .env"
-            )
+            log.error("Can get project name and team id, you must add in .env")
             exit(1)
 
+    team_id = int(team_id)
     log.info("=" * 55)
     log.info("PeerSphere — 42Berlin Eval Auto-Assigner")
     log.info("=" * 55)
@@ -322,11 +241,10 @@ def main():
         attempt += 1
         log.info("Attempt #%d", attempt)
 
-        if try_assign(session, team_id, project_name, refresh_token, csrf_token, session_id):
+        if try_assign(session, team_id, project_name, refresh_token):
             log.info("Done! You got your eval slot. Go crush it.")
-            sys.exit(0)
+            exit(0)
 
-        # Sleep in small increments so Ctrl+C is responsive
         for _ in range(interval):
             if not running:
                 break
