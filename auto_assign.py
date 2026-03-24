@@ -12,6 +12,8 @@ USER_INFO_ENDPOINT = f'{BASE_URL}/backend/intra/teams/'
 TOKEN_REFRESH_ENDPOINT = f'{BASE_URL}/backend/api/accounts/token/refresh/'
 POLL_INTERVAL = 30
 
+refresh_token = ''
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -43,7 +45,7 @@ signal.signal(signal.SIGTERM, _handle_signal)
 # ---------------------------------------------------------------------------
 # Token helpers
 # ---------------------------------------------------------------------------
-def refresh_access_token(session: requests.Session, refresh_token: str):
+def refresh_access_token(session: requests.Session):
     log.info('Attempting to refresh access token...')
     try:
         resp = session.post(
@@ -55,15 +57,21 @@ def refresh_access_token(session: requests.Session, refresh_token: str):
             log.info('Access token refreshed successfully.')
             return True
         log.warning('Token refresh failed (HTTP %s): %s', resp.status_code, resp.text[:200])
+        return update_refresh_token(session)
     except requests.RequestException as exc:
         log.error('Token refresh request error: %s', exc)
     return False
 
+def update_refresh_token(session):
+    global refresh_token
+    refresh_token = input('new refresh token: ').strip()
+    update_env_file(REFRESH_TOKEN=refresh_token)
+    return refresh_access_token(session)
 
 # ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
-def build_session(access_token: str, refresh_token: str, csrf_token: str, session_id: str) -> requests.Session:
+def build_session(access_token: str, csrf_token: str, session_id: str) -> requests.Session:
     s = requests.Session()
 
     s.cookies.set('access_token', access_token, domain='evaluations.42berlin.de')
@@ -93,10 +101,7 @@ class MissingUserData(Exception):
         super().__init__('Missing project name and team id')
 
 
-def get_user_info(
-        session: requests.Session,
-        refresh_token: str,
-):
+def get_user_info(session: requests.Session):
 
     try:
         resp = session.get(USER_INFO_ENDPOINT, timeout=15)
@@ -107,7 +112,7 @@ def get_user_info(
 
     if resp.status_code == 401:
         log.warning('Unauthorized (401) — token may have expired.')
-        refreshed = refresh_access_token(session, refresh_token)
+        refreshed = refresh_access_token(session)
         if refreshed:
             try:
                 resp = session.get(USER_INFO_ENDPOINT, timeout=15)
@@ -115,9 +120,7 @@ def get_user_info(
                 log.error('Request failed: %s', exc)
                 raise Exception()
             if resp.status_code >= 400:
-                log.error(
-                    'Could not refresh token. You may need to log in again and update .env'
-                )
+                log.error('Could not refresh token. You may need to log in again and update .env')
                 raise MissingUserData()
 
     data = resp.json()
@@ -125,7 +128,7 @@ def get_user_info(
     return project['id'], project['project_name']
 
 
-def try_assign(session: requests.Session, team_id, project_name, refresh_token):
+def try_assign(session: requests.Session, team_id, project_name):
     payload = {'team_id': team_id, 'project_name': project_name}
 
     try:
@@ -147,7 +150,7 @@ def try_assign(session: requests.Session, team_id, project_name, refresh_token):
 
     if status == 401:
         log.warning('Unauthorized (401) — token may have expired.')
-        refreshed = refresh_access_token(session, refresh_token)
+        refreshed = refresh_access_token(session)
         if refreshed:
             log.info('Retrying assign with refreshed token...')
             try:
@@ -189,7 +192,38 @@ def load_env_file():
                 os.environ.setdefault(key, value)
 
 
+def update_env_file(**kwargs):
+    print('UPDATE', kwargs)
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    print('env path', env_path)
+    if not os.path.isfile(env_path):
+        return
+    old_env = {}
+    with open(env_path, 'r') as f:
+        for line in f:
+            print(line)
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' in line:
+                print('add line', line)
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip().strip('\'\"')
+                old_env[key] = value
+
+    lines = []
+    for key, value in old_env.items():
+        if key in kwargs:
+            value = kwargs[key]
+        lines.append('%s=%s' % (key, value))
+
+    with open(env_path, 'w') as f:
+        f.write('\n'.join(lines))
+
+
 def main():
+    global refresh_token
     load_env_file()
 
     team_id = os.environ.get('TEAM_ID', '0')
@@ -216,11 +250,11 @@ def main():
     if not refresh_token:
         log.warning('REFRESH_TOKEN not set — token auto-refresh will not work. Script will stop if the access token expires.')
 
-    session = build_session(access_token, refresh_token, csrf_token, session_id)
+    session = build_session(access_token, csrf_token, session_id)
 
     if not project_name or not team_id:
         try:
-            team_id, project_name = get_user_info(session, refresh_token)
+            team_id, project_name = get_user_info(session)
         except MissingUserData:
             log.error('Can get project name and team id, you must add in .env')
             exit(1)
@@ -240,7 +274,7 @@ def main():
         attempt += 1
         log.info('Attempt #%d', attempt)
 
-        if try_assign(session, team_id, project_name, refresh_token):
+        if try_assign(session, team_id, project_name):
             log.info('Done! You got your eval slot. Go crush it.')
             exit(0)
 
