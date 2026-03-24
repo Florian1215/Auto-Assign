@@ -6,7 +6,7 @@ import time
 
 import requests
 
-BASE_URL = 'tps://evaluations.42berlin.de'
+BASE_URL = 'https://evaluations.42berlin.de'
 ASSIGN_ENDPOINT = f'{BASE_URL}/backend/intra/teams/assign/'
 USER_INFO_ENDPOINT = f'{BASE_URL}/backend/intra/teams/'
 TOKEN_REFRESH_ENDPOINT = f'{BASE_URL}/backend/api/accounts/token/refresh/'
