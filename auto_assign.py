@@ -65,7 +65,9 @@ def refresh_access_token(session: requests.Session):
 def update_refresh_token(session):
     global refresh_token
     refresh_token = input('new refresh token: ').strip()
-    update_env_file(REFRESH_TOKEN=refresh_token)
+    access_token = input('new access token: ').strip()
+    session.cookies.set('access_token', access_token, domain='evaluations.42berlin.de')
+    update_env_file(REFRESH_TOKEN=refresh_token, ACCESS_TOKEN=access_token)
     return refresh_access_token(session)
 
 # ---------------------------------------------------------------------------
